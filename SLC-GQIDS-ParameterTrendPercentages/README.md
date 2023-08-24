@@ -1,1 +1,0 @@
-# SLC-GQIDS-ParameterTrendPercentages
