@@ -1,0 +1,59 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\GIT\\Automation\\Customers\\SkylineCommunications\\SLC-GQIDS-ParameterTrendPercentages\\ParameterTrendPercentages\\ParameterTrendPercentages_1\\ParameterTrendPercentages_1.csproj": {}
+  },
+  "projects": {
+    "C:\\GIT\\Automation\\Customers\\SkylineCommunications\\SLC-GQIDS-ParameterTrendPercentages\\ParameterTrendPercentages\\ParameterTrendPercentages_1\\ParameterTrendPercentages_1.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\GIT\\Automation\\Customers\\SkylineCommunications\\SLC-GQIDS-ParameterTrendPercentages\\ParameterTrendPercentages\\ParameterTrendPercentages_1\\ParameterTrendPercentages_1.csproj",
+        "projectName": "ParameterTrendPercentages_1",
+        "projectPath": "C:\\GIT\\Automation\\Customers\\SkylineCommunications\\SLC-GQIDS-ParameterTrendPercentages\\ParameterTrendPercentages\\ParameterTrendPercentages_1\\ParameterTrendPercentages_1.csproj",
+        "packagesPath": "C:\\Users\\leander\\.nuget\\packages\\",
+        "outputPath": "C:\\GIT\\Automation\\Customers\\SkylineCommunications\\SLC-GQIDS-ParameterTrendPercentages\\ParameterTrendPercentages\\ParameterTrendPercentages_1\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\leander\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net462"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net462": {
+            "targetAlias": "net462",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        }
+      },
+      "frameworks": {
+        "net462": {
+          "targetAlias": "net462",
+          "dependencies": {
+            "Skyline.DataMiner.Dev.Automation": {
+              "target": "Package",
+              "version": "[10.3.8, )"
+            },
+            "StyleCop.Analyzers": {
+              "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[1.1.118, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\7.0.304\\RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
