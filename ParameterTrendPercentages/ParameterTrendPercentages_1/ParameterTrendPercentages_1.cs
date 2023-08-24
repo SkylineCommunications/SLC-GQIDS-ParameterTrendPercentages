@@ -62,12 +62,12 @@ using Skyline.DataMiner.Net.Trending;
 [GQIMetaData(Name = "Parameter trend percentages")]
 public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQIOnPrepareFetch
 {
-    private static GQIStringColumn _severityColumn = new GQIStringColumn("Value");
-    private static GQIDoubleColumn _percentageColumn = new GQIDoubleColumn("Percentage");
+    private static readonly GQIStringColumn _keyColumn = new GQIStringColumn("Key");
+    private static readonly GQIDoubleColumn _percentageColumn = new GQIDoubleColumn("Percentage");
 
-    private static GQIStringArgument _paramIdArg = new GQIStringArgument("Parameter Id") { IsRequired = true };
-    private static GQIDateTimeArgument _startArg = new GQIDateTimeArgument("Start") { IsRequired = false };
-    private static GQIDateTimeArgument _endArg = new GQIDateTimeArgument("End") { IsRequired = false };
+    private static readonly GQIStringArgument _paramIdArg = new GQIStringArgument("Parameter Id") { IsRequired = true };
+    private static readonly GQIDateTimeArgument _startArg = new GQIDateTimeArgument("Start") { IsRequired = false };
+    private static readonly GQIDateTimeArgument _endArg = new GQIDateTimeArgument("End") { IsRequired = false };
 
     private ParameterID _parameter;
     private DateTime _start;
@@ -87,19 +87,29 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
 
     public OnArgumentsProcessedOutputArgs OnArgumentsProcessed(OnArgumentsProcessedInputArgs args)
     {
-        var paramID = args.GetArgumentValue(_paramIdArg);
         var result = new OnArgumentsProcessedOutputArgs();
+
+        // Process parameter information
+        var paramID = args.GetArgumentValue(_paramIdArg);
         if (string.IsNullOrWhiteSpace(paramID))
             return result;
 
         var parts = paramID.Split('/');
-        if (parts.Length != 3)
+        if (parts.Length == 3 || parts.Length == 4)
+        {
+            if (int.TryParse(parts[0], out var dmaID) &&
+                int.TryParse(parts[1], out var elementID) &&
+                int.TryParse(parts[2], out var parameterID))
+            {
+                _parameter = parts.Length == 3
+                    ? new ParameterID(dmaID, elementID, parameterID)
+                    : new ParameterID(dmaID, elementID, parameterID, parts[3]);
+            }
+        }
+        else
+        {
             return result;
-
-        if (int.TryParse(parts[0], out var dmaID) &&
-            int.TryParse(parts[1], out var elementID) &&
-            int.TryParse(parts[2], out var parameterID))
-            _parameter = new ParameterID(dmaID, elementID, parameterID);
+        }
 
         args.TryGetArgumentValue(_startArg, out _start);
         args.TryGetArgumentValue(_endArg, out _end);
@@ -111,7 +121,7 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
     {
         return new GQIColumn[]
         {
-            _severityColumn,
+            _keyColumn,
             _percentageColumn,
         };
     }
@@ -162,11 +172,6 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
         return new OnInitOutputArgs();
     }
 
-    private static string DMADateTimeToStringFormat(DateTime input)
-    {
-        return input.ToString("yyyy'-'MM'-'dd HH':'mm':'ss", CultureInfo.InvariantCulture);
-    }
-
     private static GQIRow FormatRow(string value, double percentage)
     {
         return new GQIRow(new[]
@@ -189,14 +194,14 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
     {
         TrendingType trendingType = TrendingType.Realtime;
 
-        if (_start == _end)
-            throw new DataMinerException("Timeslot cannot have same start and end time - skipping check.");
+        if (_start >= _end)
+            throw new DataMinerException("Invalid time provided.");
 
         var getTrendDataMessage = new GetTrendDataMessage
         {
             DataMinerID = _parameter.DataMinerID,
             ElementID = _parameter.ElementID,
-            Parameters = new[] { new ParameterIndexPair(_parameter.ParameterID_) },
+            Parameters = _parameter.Instance == null ? new[] { new ParameterIndexPair(_parameter.ParameterID_) } : new[] { new ParameterIndexPair(_parameter.ParameterID_, _parameter.Instance) },
             StartTime = _start,
             EndTime = _end,
             ReturnAsObjects = true,
@@ -206,32 +211,29 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
         var getTrendDataResponseMessage = (GetTrendDataResponseMessage)_callback.SendMessage(getTrendDataMessage);
         List<TrendRecord> records = getTrendDataResponseMessage.Records.Values.FirstOrDefault().OrderBy(r => r.Time).ToList() ?? throw new DataMinerException("Failed to retrieve trend information for the provided timeslot");
 
-        // Search all records before start time and add closest with updated start time.
-        Dictionary<DateTime, string> trendRecords = new Dictionary<DateTime, string>();
-        List<TrendRecord> beforeStartRecords = records.Where(r => r.Time <= _start).ToList();
-        if (beforeStartRecords.Count > 0)
-            trendRecords.Add(_start, beforeStartRecords.Last().GetStringValue());
+        // Remove empty values or outside window of request
+        List<TrendRecord> filteredRecords = records
+            .Where(r => r.Time >= _start && r.Time <= _end && !string.IsNullOrEmpty(r.GetStringValue()))
+            .ToList();
 
-        // Add trend records to Dictionary if value is not empty and within window
-        foreach (var record in records.Where(r => r.GetStringValue() != string.Empty && r.Time > _start && r.Time < _end))
-        {
-            if (!trendRecords.ContainsKey(record.Time))
-                trendRecords.Add(record.Time, record.GetStringValue());
-        }
+        // Convert the filtered records into a dictionary
+        Dictionary<DateTime, string> trendRecords = filteredRecords
+            .ToDictionary(r => r.Time, r => r.GetStringValue());
 
         // Count the different number of string values
-        _result = CalculateStringPercentages(trendRecords);
+        _result = CalculateKeyDistribution(trendRecords);
     }
 
-    private Dictionary<string, double> CalculateStringPercentages(Dictionary<DateTime, string> dictionary)
+    private Dictionary<string, double> CalculateKeyDistribution(Dictionary<DateTime, string> dictionary)
     {
         int totalCount = dictionary.Count;
 
-        var stringPercentages = dictionary
+        var distribution = dictionary
             .GroupBy(entry => entry.Value)
-            .Select(group => new { StringValue = group.Key, Percentage = (double)group.Count() / totalCount * 100 })
-            .ToDictionary(item => item.StringValue, item => Math.Round(item.Percentage, 2));
+            .ToDictionary(
+                group => group.Key,
+                group => Math.Round((double)group.Count() / totalCount * 100, 2));
 
-        return stringPercentages;
+        return distribution;
     }
 }
