@@ -51,7 +51,6 @@ DATE		VERSION		AUTHOR			COMMENTS
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using Skyline.DataMiner.Analytics.GenericInterface;
 using Skyline.DataMiner.Net.Exceptions;
@@ -64,6 +63,7 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
 {
     private static readonly GQIStringColumn _keyColumn = new GQIStringColumn("Key");
     private static readonly GQIDoubleColumn _percentageColumn = new GQIDoubleColumn("Percentage");
+    private static readonly GQIDoubleColumn _absoluteColumn = new GQIDoubleColumn("Absolute");
 
     private static readonly GQIStringArgument _paramIdArg = new GQIStringArgument("Parameter Id") { IsRequired = true };
     private static readonly GQIDateTimeArgument _startArg = new GQIDateTimeArgument("Start") { IsRequired = false };
@@ -72,8 +72,9 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
     private ParameterID _parameter;
     private DateTime _start;
     private DateTime _end;
+    private List<ResultRow> _result;
+
     private GQIDMS _callback;
-    private Dictionary<string, double> _result;
 
     public GQIArgument[] GetInputArguments()
     {
@@ -111,8 +112,8 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
             return result;
         }
 
-        args.TryGetArgumentValue(_startArg, out _start);
-        args.TryGetArgumentValue(_endArg, out _end);
+        _start = args.GetArgumentValue(_startArg);
+        _end = args.GetArgumentValue(_endArg);
 
         return result;
     }
@@ -123,6 +124,7 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
         {
             _keyColumn,
             _percentageColumn,
+            _absoluteColumn,
         };
     }
 
@@ -132,7 +134,7 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
 
         foreach (var item in _result)
         {
-            GQIRow row = FormatRow(item.Key, item.Value);
+            GQIRow row = FormatRow(item.Key, item.Percentage, item.Absolute);
             rows.Add(row);
         }
 
@@ -147,19 +149,8 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
         if (_parameter == null)
             throw new GenIfException("Invalid parameter ID.");
 
-        DateTime start;
-        DateTime end;
-        if (_start != DateTime.MinValue && _end != DateTime.MinValue)
-        {
-            start = _start;
-            end = _end;
-        }
-        else
-        {
-            var now = DateTime.UtcNow;
-            start = DateTime.UtcNow - TimeSpan.FromHours(24);
-            end = now;
-        }
+        _start = TimeZoneInfo.ConvertTimeFromUtc(_start, TimeZoneInfo.Local);
+        _end = TimeZoneInfo.ConvertTimeFromUtc(_end, TimeZoneInfo.Local);
 
         RetrieveTrendRecords();
 
@@ -172,18 +163,24 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
         return new OnInitOutputArgs();
     }
 
-    private static GQIRow FormatRow(string value, double percentage)
+    private static GQIRow FormatRow(string value, double percentage, double absolute)
     {
         return new GQIRow(new[]
         {
             new GQICell() {Value = value },
             FormatPercentageCell(percentage),
+            FormatAbsoluteCell(absolute),
         });
     }
 
     private static GQICell FormatPercentageCell(double percentage)
     {
         return new GQICell() { Value = percentage, DisplayValue = $"{Math.Round(percentage, 2)} %" };
+    }
+
+    private static GQICell FormatAbsoluteCell(double absolute)
+    {
+        return new GQICell() { Value = absolute, DisplayValue = $"{absolute}" };
     }
 
     /// <summary>
@@ -194,9 +191,11 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
     {
         TrendingType trendingType = TrendingType.Realtime;
 
+        // Throw exception if time range is incorrect.
         if (_start >= _end)
             throw new DataMinerException("Invalid time provided.");
 
+        // Retrieve trending information
         var getTrendDataMessage = new GetTrendDataMessage
         {
             DataMinerID = _parameter.DataMinerID,
@@ -209,31 +208,92 @@ public class CSVDataSource : IGQIOnInit, IGQIDataSource, IGQIInputArguments, IGQ
         };
 
         var getTrendDataResponseMessage = (GetTrendDataResponseMessage)_callback.SendMessage(getTrendDataMessage);
-        List<TrendRecord> records = getTrendDataResponseMessage.Records.Values.FirstOrDefault().OrderBy(r => r.Time).ToList() ?? throw new DataMinerException("Failed to retrieve trend information for the provided timeslot");
+        var response = getTrendDataResponseMessage;
 
-        // Remove empty values or outside window of request
-        List<TrendRecord> filteredRecords = records
-            .Where(r => r.Time >= _start && r.Time <= _end && !string.IsNullOrEmpty(r.GetStringValue()))
-            .ToList();
+        // Process trending information
+        Dictionary<string, double> result = new Dictionary<string, double>();
+        if (response.Records.Values.FirstOrDefault() != null)
+        {
+            List<TrendRecord> records = response.Records.Values.FirstOrDefault().OrderBy(r => r.Time).ToList();
+            Dictionary<DateTime, string> trendRecords = new Dictionary<DateTime, string>();
 
-        // Convert the filtered records into a dictionary
-        Dictionary<DateTime, string> trendRecords = filteredRecords
-            .ToDictionary(r => r.Time, r => r.GetStringValue());
+            // Search all records before start time and add closest with updated start time
+            List<TrendRecord> beforeStartRecords = records.Where(r => r.Time <= _start).ToList();
+            trendRecords.Add(_start, beforeStartRecords.Count > 0 ? beforeStartRecords.Last().GetStringValue() : "Not trended");
 
-        // Count the different number of string values
-        _result = CalculateKeyDistribution(trendRecords);
+            // Add trend records to Dictionary if value is not empty and within window
+            foreach (var record in records.Where(r => r.GetStringValue() != string.Empty && r.Time > _start && r.Time < _end))
+            {
+                // Remove milliseconds to avoid duplicate time records
+                record.Time.AddMilliseconds(record.Time.Millisecond * -1);
+
+                if (!trendRecords.ContainsKey(record.Time))
+                    trendRecords.Add(record.Time, record.GetStringValue());
+            }
+
+            // Stretch last known value to end time
+            if (trendRecords.Last().Key != _end)
+                trendRecords.Add(_end, trendRecords.Last().Value);
+
+            // Calculate percentages
+            _result = Calculate(trendRecords);
+        }
+        else
+        {
+            // If no points are returned, indicate that no trending is enabled.
+            _result = new List<ResultRow>
+            {
+                new ResultRow() { Key = "Not trended", Percentage = 100, Absolute = 0 },
+            };
+        }
     }
 
-    private Dictionary<string, double> CalculateKeyDistribution(Dictionary<DateTime, string> dictionary)
+    /// <summary>
+    /// Calculate Percentages.
+    /// </summary>
+    /// <param name="records">Trend records dictionary.</param>
+    /// <returns>Dictionary with each distinct value as key and the percentage as value.</returns>
+    private List<ResultRow> Calculate(Dictionary<DateTime, string> records)
     {
-        int totalCount = dictionary.Count;
+        int totalDuration = 0;
+        var sortedRecords = records.OrderBy(entry => entry.Key).ToList();
+        Dictionary<string, int> activeTimes = new Dictionary<string, int>();
 
-        var distribution = dictionary
-            .GroupBy(entry => entry.Value)
-            .ToDictionary(
-                group => group.Key,
-                group => Math.Round((double)group.Count() / totalCount * 100, 2));
+        for (int i = 0; i < sortedRecords.Count - 1; i++)
+        {
+            // Calculate duration
+            int duration = (int)(sortedRecords[i + 1].Key - sortedRecords[i].Key).TotalSeconds;
 
-        return distribution;
+            // Add key if does not yet exist
+            if (!activeTimes.ContainsKey(sortedRecords[i].Value))
+                activeTimes.Add(sortedRecords[i].Value, duration);
+            else
+                activeTimes[sortedRecords[i].Value] += duration;
+
+            // Calculate total duration for percentage calculation.
+            totalDuration += duration;
+        }
+
+        // Calculate and return
+        return activeTimes
+        .Select(kv => new ResultRow
+        {
+            Key = kv.Key,
+            Percentage = ((double)kv.Value / totalDuration) * 100,
+            Absolute = kv.Value,
+        })
+        .ToList();
     }
+}
+
+/// <summary>
+/// ResultRow class.
+/// </summary>
+public class ResultRow
+{
+    public string Key { get; set; }
+
+    public double Percentage { get; set; }
+
+    public double Absolute { get; set; }
 }
